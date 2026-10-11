@@ -311,7 +311,10 @@ function App() {
 
   // Declared here because the content type default below reads from it
   const [config, setConfig] = useState<AppConfig | null>(null);
-  const [isForYouOpen, setIsForYouOpen] = useState(false);
+  // For You is the landing view, unless the page was opened from a search link (#q=… / ?q=…).
+  const [isForYouOpen, setIsForYouOpen] = useState(
+    () => window.location.hash.length <= 1 && window.location.search.length <= 1,
+  );
   const [forYouBooks, setForYouBooks] = useState<Book[]>([]);
 
   // Content type state (ebook vs audiobook) - defined before useSearch since it's passed to it
@@ -959,6 +962,7 @@ function App() {
       providerOverride?: string;
       sort?: string;
     }) => {
+      setIsForYouOpen(false);
       void refreshRequestPolicy();
       void handleSearch({
         query: opts.query,
@@ -2458,7 +2462,7 @@ function App() {
           onLoadAdminUsers={loadAdminUsers}
           statusCounts={statusCounts}
           onLogoClick={() => {
-            setIsForYouOpen(false);
+            setIsForYouOpen(true);
             handleResetSearch(config);
             setActiveQueryTarget('general');
             setActiveResultsSort('');
@@ -2468,10 +2472,7 @@ function App() {
           onLogout={() => {
             void handleLogoutWithCleanup();
           }}
-          onSearch={() => {
-            setIsForYouOpen(false);
-            handleSearchDispatch();
-          }}
+          onSearch={handleSearchDispatch}
           onAdvancedToggle={
             hasAdvancedContent ? () => setShowAdvanced(!effectiveShowAdvanced) : undefined
           }

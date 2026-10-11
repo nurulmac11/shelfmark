@@ -21,7 +21,7 @@ import hashlib
 import re
 import threading
 import zipfile
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,6 +46,11 @@ EBOOK_EXTENSIONS = {".epub", ".pdf", ".mobi", ".azw", ".azw3", ".djvu", ".fb2", 
 MAX_SEED_FILES = 200
 MAX_AUTHOR_ROWS = 6
 MIN_BOOKS_PER_ROW = 5
+TOP_PICKS_SIZE = 18
+TOP_PICKS_PER_SOURCE_ROW = 3
+# Topic matches are the strongest signal, trending the weakest.
+_SOURCE_WEIGHT = {"subject": 1.0, "author": 0.8, "trending": 0.6}
+_ROW_ORDER = {"subject": 0, "author": 1, "trending": 2}
 MAX_SUBJECT_ROWS = 3
 BOOKS_PER_ROW = 18
 CACHE_TTL_SECONDS = 6 * 60 * 60
@@ -94,6 +99,13 @@ _GENERIC_SUBJECTS = {
 }
 _SUBJECT_NOISE = re.compile(
     r"(\(|_\d{4}|^\d+$|nyt:|award|language_materials|_fiction$|in_fiction$)"
+)
+
+# Retellings/companions of other books are never useful recommendations.
+_DERIVATIVE = re.compile(
+    r"\b(adaptation|graphic novel|study guide|summary of|sparknotes|cliffs ?notes|"
+    r"reader'?s guide|workbook for|analysis of)\b",
+    re.IGNORECASE,
 )
 
 _build_lock = threading.Lock()
@@ -362,6 +374,9 @@ def _trending_row() -> list[tuple[str, str, list[BookMetadata]]]:
 
 
 def _is_owned(book: BookMetadata, owned_titles: set[str]) -> bool:
+    """True for books already in the library, and for derivative works (adaptations etc.)."""
+    if _DERIVATIVE.search(f"{book.title} {book.subtitle or ''}"):
+        return True
     title = _normalize(book.title)
     if not title:
         return False
@@ -386,6 +401,47 @@ def _book_dict(book: BookMetadata) -> dict[str, Any]:
     return data
 
 
+def _row_kind(key: str) -> str:
+    return key.split(":", 1)[0]
+
+
+def _top_picks(
+    raw_rows: list[tuple[str, str, list[BookMetadata]]], owned: set[str]
+) -> list[BookMetadata]:
+    """Mixed picks across every row.
+
+    A book scores by its position in each row it appears in (weighted by row
+    kind), plus a bonus for every extra row that suggests it. At most
+    TOP_PICKS_PER_SOURCE_ROW picks come from any one row, so the mix stays varied.
+    """
+    scores: dict[str, float] = defaultdict(float)
+    sources: dict[str, set[str]] = defaultdict(set)
+    first: dict[str, tuple[str, BookMetadata]] = {}
+    for key, _title, books in raw_rows:
+        weight = _SOURCE_WEIGHT.get(_row_kind(key), 0.5)
+        for position, book in enumerate(books[:BOOKS_PER_ROW]):
+            norm = _normalize(book.title)
+            if not norm or _is_owned(book, owned):
+                continue
+            scores[norm] += weight * (1 - position / BOOKS_PER_ROW)
+            sources[norm].add(key)
+            first.setdefault(norm, (key, book))
+    for norm, keys in sources.items():
+        scores[norm] += 0.75 * (len(keys) - 1)
+
+    picks: list[BookMetadata] = []
+    per_row: Counter[str] = Counter()
+    for norm in sorted(scores, key=lambda n: scores[n], reverse=True):
+        row_key, book = first[norm]
+        if per_row[row_key] >= TOP_PICKS_PER_SOURCE_ROW:
+            continue
+        per_row[row_key] += 1
+        picks.append(book)
+        if len(picks) >= TOP_PICKS_SIZE:
+            break
+    return picks
+
+
 def _build(files: list[Path]) -> dict[str, Any]:
     seeds = _read_seeds(files)
     openlibrary = _openlibrary()
@@ -408,8 +464,22 @@ def _build(files: list[Path]) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 - a broken row source shouldn't break the page
             logger.warning("For You: building a row failed: %s", exc)
 
+    # Topic rows first, then authors, then trending (stable within each kind).
+    raw_rows.sort(key=lambda row: _ROW_ORDER.get(_row_kind(row[0]), len(_ROW_ORDER)))
+
     seen: set[str] = set()
     rows = []
+    picks = _top_picks(raw_rows, owned)
+    if len(picks) >= MIN_BOOKS_PER_ROW:
+        rows.append(
+            {
+                "key": "top-picks",
+                "title": "Top picks for you",
+                "books": [_book_dict(b) for b in picks],
+            }
+        )
+        for book in picks:  # don't repeat top picks in the rows below
+            seen.update({f"{book.provider}:{book.provider_id}", _normalize(book.title)})
     for key, title, books in raw_rows:
         picked = []
         for book in books:
