@@ -2745,6 +2745,28 @@ def api_metadata_search() -> Response | tuple[Response, int]:
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/for-you", methods=["GET"])
+@login_required
+def api_for_you() -> Response | tuple[Response, int]:
+    """Recommendation rows built from the books already in the library folder.
+
+    Query Parameters:
+        refresh (bool): Rebuild instead of using the cached rows.
+
+    Returns:
+        flask.Response: JSON ``{"rows": [{"key", "title", "books": [...]}], "seed_count": int}``.
+
+    """
+    try:
+        from shelfmark.core.for_you import get_for_you
+
+        refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+        return jsonify(get_for_you(refresh=refresh))
+    except _IMPORT_OPERATIONAL_ERRORS as e:
+        logger.error_trace(f"For You error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/metadata/field-options", methods=["GET"])
 @login_required
 def api_metadata_field_options() -> Response:

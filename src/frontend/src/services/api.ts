@@ -42,6 +42,7 @@ const API_BASE = getApiBase();
 // API endpoints
 const API = {
   metadataSearch: `${API_BASE}/metadata/search`,
+  forYou: `${API_BASE}/for-you`,
   metadataConfig: `${API_BASE}/metadata/config`,
   metadataProviders: `${API_BASE}/metadata/providers`,
   status: `${API_BASE}/status`,
@@ -340,6 +341,32 @@ interface BookTargetStateResult {
 }
 
 // Search metadata providers and normalize to Book format
+export interface ForYouRow {
+  key: string;
+  title: string;
+  books: Book[];
+}
+
+interface ForYouResponse {
+  rows: Array<{ key: string; title: string; books: MetadataBookData[] }>;
+  seed_count: number;
+}
+
+/** Recommendation rows built from the books already in the library folder. */
+export const getForYou = async (
+  refresh: boolean = false,
+): Promise<{ rows: ForYouRow[]; seedCount: number }> => {
+  const response = await fetchJSON<ForYouResponse>(`${API.forYou}${refresh ? '?refresh=1' : ''}`);
+  return {
+    rows: response.rows.map((row) => ({
+      key: row.key,
+      title: row.title,
+      books: row.books.map(transformMetadataToBook),
+    })),
+    seedCount: response.seed_count,
+  };
+};
+
 export const searchMetadata = async (
   query: string,
   limit: number = 40,
